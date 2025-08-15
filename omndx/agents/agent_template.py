@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents.agent_logger import AgentLogger
+from .agent_logger import AgentLogger
 
 
 class Agent:

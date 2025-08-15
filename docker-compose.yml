@@ -1,0 +1,66 @@
+version: '3.8'
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+
+  graphite:
+    image: graphiteapp/graphite-statsd:1.1.9
+    ports:
+      - "127.0.0.1:8080:80"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.53
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:14268:14268"
+
+  loki:
+    image: grafana/loki:2.9.3
+    ports:
+      - "127.0.0.1:3100:3100"
+
+  grafana:
+    image: grafana/grafana:10.2.3
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.5.0
+    environment:
+      - MEILI_NO_ANALYTICS=true
+      - MEILI_MASTER_KEY=${MEILI_MASTER_KEY}
+    ports: ["127.0.0.1:7700:7700"]
+    volumes: ["meili_data:/meili_data"]
+
+  mariadb:
+    image: mariadb:10.5
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: wordpress
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    ports: ["127.0.0.1:3306:3306"]
+
+  wp:
+    image: wordpress:6.4.3-php8.0-fpm-alpine
+    ports: ["127.0.0.1:8081:80"]
+    environment:
+      WORDPRESS_DB_HOST: mariadb
+      WORDPRESS_JWT_AUTH_SECRET_KEY: ${WORDPRESS_JWT_AUTH_SECRET_KEY}
+      WORDPRESS_CONFIG_EXTRA: |
+        define('JWT_AUTH_SECRET_KEY', getenv('WORDPRESS_JWT_AUTH_SECRET_KEY'));
+
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]
+    mem_limit: 512m
+    cpus: 1.0
+
+volumes:
+  meili_data:
+  mariadb_data:

@@ -1,8 +1,8 @@
-"""Agent-specific wrapper around :class:`~core.instrumentation.TagLogger`."""
+"""Agent-specific wrapper around :class:`omndx.core.instrumentation.TagLogger`."""
 
 from __future__ import annotations
 
-from core.instrumentation import TagLogger
+from omndx.core.instrumentation import TagLogger
 
 
 class AgentLogger(TagLogger):

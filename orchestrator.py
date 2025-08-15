@@ -19,6 +19,8 @@ from typing import Any, Dict, Optional
 from sqlmodel import Field, SQLModel, Session, create_engine, select
 from sqlalchemy import Column, JSON
 
+from omndx.core import GraphiteClient, JaegerTracer, LokiHandler, RabbitMQClient
+
 # ---------------------------------------------------------------------------
 # Fallback implementations for modules that may not yet exist. These are fully
 # functional but minimal; when the real modules are provided they will override
@@ -28,15 +30,24 @@ try:  # Metrics
     from metrics_collector import MetricsCollector  # type: ignore
 except Exception:  # pragma: no cover - fallback
     class MetricsCollector:  # minimal synchronous metrics collector
-        def __init__(self, component: str):
+        def __init__(
+            self, component: str, graphite: GraphiteClient | None = None
+        ) -> None:
             self.component = component
+            self.graphite = graphite
             self._counters: Dict[str, int] = {}
 
         def increment(self, name: str, value: int = 1) -> None:
             self._counters[name] = self._counters.get(name, 0) + value
+            if self.graphite:
+                self.graphite.send(
+                    f"{self.component}.{name}", self._counters[name]
+                )
 
         def gauge(self, name: str, value: float) -> None:
             self._counters[name] = int(value)
+            if self.graphite:
+                self.graphite.send(f"{self.component}.{name}", value)
 
         def snapshot(self) -> Dict[str, int]:
             return dict(self._counters)
@@ -45,7 +56,7 @@ try:  # Logger
     from agent_logger import AgentLogger  # type: ignore
 except Exception:  # pragma: no cover - fallback
     class AgentLogger:
-        def __init__(self, component: str):
+        def __init__(self, component: str, loki_url: str | None = None) -> None:
             self.component = component
             self._logger = logging.getLogger(component)
             if not self._logger.handlers:
@@ -53,6 +64,10 @@ except Exception:  # pragma: no cover - fallback
                 fmt = "%(asctime)s %(levelname)s %(message)s"
                 handler.setFormatter(logging.Formatter(fmt))
                 self._logger.addHandler(handler)
+            if loki_url:
+                self._logger.addHandler(
+                    LokiHandler(url=loki_url, tags={"component": component})
+                )
             self._logger.setLevel(logging.INFO)
 
         def _log(self, level: str, event: str, **data: Any) -> None:
@@ -139,13 +154,19 @@ class Orchestrator:
         watchdog: Optional[Watchdog] = None,
         repair_agent: Optional[RepairAgent] = None,
         max_concurrency: int = 4,
+        graphite: GraphiteClient | None = None,
+        tracer: JaegerTracer | None = None,
+        loki_url: str | None = None,
+        rabbitmq: RabbitMQClient | None = None,
     ) -> None:
         self.engine = create_engine(db_url, echo=False, future=True)
         SQLModel.metadata.create_all(self.engine)
 
         self.router = router or AgentRouter()
-        self.metrics = metrics or MetricsCollector("orchestrator")
-        self.logger = logger or AgentLogger("orchestrator")
+        self.metrics = metrics or MetricsCollector("orchestrator", graphite)
+        self.logger = logger or AgentLogger("orchestrator", loki_url=loki_url)
+        self.tracer = tracer or JaegerTracer("omndx")
+        self.rabbitmq = rabbitmq
         self.watchdog = watchdog or Watchdog(self.restart_task)
         self.repair_agent = repair_agent or RepairAgent()
 
@@ -203,9 +224,10 @@ class Orchestrator:
             self.logger.debug("task_started", task_id=task_id, attempt=attempt)
             self.metrics.increment("tasks_running")
             try:
-                result = await asyncio.wait_for(
-                    self.router.route(task.name, task.payload), timeout=600
-                )
+                with self.tracer.span(task.name):
+                    result = await asyncio.wait_for(
+                        self.router.route(task.name, task.payload), timeout=600
+                    )
                 with Session(self.engine, expire_on_commit=False) as session:
                     task = session.get(Task, task_id)
                     task.status = "completed"
@@ -215,6 +237,10 @@ class Orchestrator:
                     session.commit()
                 self.logger.info("task_completed", task_id=task_id)
                 self.metrics.increment("tasks_completed")
+                if self.rabbitmq:
+                    self.rabbitmq.publish(
+                        "tasks", {"task_id": task_id, "status": "completed"}
+                    )
                 return
             except Exception as exc:
                 self.logger.error("task_error", task_id=task_id, error=str(exc))
@@ -231,6 +257,10 @@ class Orchestrator:
                 session.commit()
         self.logger.error("task_failed", task_id=task_id)
         self.metrics.increment("tasks_failed")
+        if self.rabbitmq:
+            self.rabbitmq.publish(
+                "tasks", {"task_id": task_id, "status": "failed"}
+            )
         await self.repair_agent.schedule_repair(task_id, RuntimeError("retries_exhausted"))
 
     async def _worker(self) -> None:
