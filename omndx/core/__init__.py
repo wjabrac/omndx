@@ -7,5 +7,16 @@ implemented.
 """
 
 from .instrumentation import TagLogger
+from .rabbitmq_client import RabbitMQClient
+from .graphite_metrics import GraphiteClient
+from .jaeger_tracer import JaegerTracer
+from .loki_logger import LokiHandler, get_loki_logger
 
-__all__ = ["TagLogger"]
+__all__ = [
+    "TagLogger",
+    "RabbitMQClient",
+    "GraphiteClient",
+    "JaegerTracer",
+    "LokiHandler",
+    "get_loki_logger",
+]
