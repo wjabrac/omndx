@@ -17,7 +17,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol
+from typing import Any, Dict, List, Optional, Protocol, Callable
 
 logger = logging.getLogger("omndx.llm")
 
@@ -70,11 +70,14 @@ class LangChainLLM:
     _PROD_KEYS = {"model_name", "endpoint", "api_key"}
 
     def __init__(self, config: Dict[str, Any]):
-        self.config = dict(config)
+        self.config: Dict[str, Any] = dict(config)
+        self.backend: str
+        self._llm: Any
+        self._call: Callable[..., str]
+
         model_name = str(self.config.get("model_name", ""))
         endpoint = self.config.get("endpoint")
         api_key = self.config.get("api_key") or os.getenv("OPENAI_API_KEY")
-        self._call: Any
 
         allowed = self._PROD_KEYS | (self._TEST_KEYS if model_name == "fake-list" else set())
         unknown = set(self.config) - allowed
