@@ -7,8 +7,9 @@ observable routing with sophisticated error handling.
 
 from __future__ import annotations
 
+import inspect
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable, Dict
 
 from omndx.runtime.metrics_collector import metrics
 
@@ -27,7 +28,15 @@ class AgentRouter:
       agents become unhealthy.
     """
 
-    def route(self, task: Any) -> Any:
+    def __init__(self) -> None:
+        # Registry mapping task types to async/sync handlers.
+        self._handlers: Dict[str, Callable[[Any], Awaitable[Any] | Any]] = {}
+
+    def register(self, task_type: str, handler: Callable[[Any], Awaitable[Any] | Any]) -> None:
+        """Register a handler for a given task type."""
+        self._handlers[task_type] = handler
+
+    async def route(self, task: Any) -> Any:
         """Route an incoming task to an agent.
 
         Args:
@@ -37,15 +46,26 @@ class AgentRouter:
             The result produced by the selected agent.
 
         The production implementation must validate the request, select an
-        appropriate agent, and return its result.  This scaffold instruments the
+        appropriate agent, and return its result. This scaffold instruments the
         call so reliability, effectiveness, efficiency and cost can be tracked
         even before the routing logic exists.
         """
         start = time.perf_counter()
-        tags = {"module": "AgentRouter", "task_type": type(task).__name__}
+        task_type = type(task).__name__
+        tags = {"module": "AgentRouter", "task_type": task_type}
         metrics.record("reliability", 0, tags | {"event": "attempt"})
         try:
-            raise NotImplementedError("AgentRouter.route is not yet implemented")
+            handler = self._handlers.get(task_type)
+            if handler is None:
+                raise ValueError(f"no handler registered for task type {task_type}")
+
+            result = handler(task)
+            if inspect.isawaitable(result):
+                result = await result
+
+            metrics.record("effectiveness", 1, tags | {"status": "succeeded"})
+            metrics.record("cost", 0.0, tags)
+            return result
         except Exception as exc:
             metrics.record("reliability", 0, tags | {"error": exc.__class__.__name__})
             metrics.record("effectiveness", 0, tags | {"status": "failed"})
