@@ -1,0 +1,4 @@
+# Contribution policy configuration
+# TODO: expand with telemetry hooks, metrics thresholds, security roles, and resiliency limits.
+credits_per_task: 1
+max_calls_per_minute: 60

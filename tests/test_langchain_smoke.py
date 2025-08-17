@@ -1,6 +1,11 @@
 import sys
 import types
 
+import pytest
+
+pytest.importorskip("langchain_openai")
+
+
 def test_langchain_smoke_import_only(monkeypatch):
     # Force imports to exist; do not perform real calls
     import langchain_openai  # noqa: F401

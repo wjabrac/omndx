@@ -1,0 +1,2 @@
+# Marker for PEP 561 type checking
+# TODO: integrate mypy in CI with telemetry, metrics, security reviews, and resiliency checks.

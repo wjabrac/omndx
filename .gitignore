@@ -2,3 +2,10 @@
 .coverage
 dist/
 *.egg-info/
+# Python cache
+__pycache__/
+# Windows alternate data streams
+*:Zone.Identifier
+
+# Generated databases
+*.sqlite
