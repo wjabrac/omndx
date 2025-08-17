@@ -1,0 +1,11 @@
+{
+  "task": "tag",
+  "content": "sample text",
+  "expected_tags": ["sample"],
+  "todo": [
+    "Add telemetry hooks for tag execution",
+    "Log metrics for tag accuracy",
+    "Enforce security on input sanitization",
+    "Improve resiliency on malformed content"
+  ]
+}

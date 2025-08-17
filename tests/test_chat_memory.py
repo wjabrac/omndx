@@ -4,6 +4,10 @@ import sqlite3
 import subprocess
 import sys
 
+import pytest
+
+pytest.importorskip("chromadb")
+
 from omndx.storage.chat_memory import ChatMemory
 
 

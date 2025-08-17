@@ -1,0 +1,9 @@
+# OMNDX runtime configuration
+# TODO: add telemetry endpoints, metrics collection, security policy paths, and resiliency tuning.
+[logging]
+level = "INFO"
+
+[telemetry]
+# placeholder for telemetry backend settings
+endpoint = "http://localhost:4317"
+

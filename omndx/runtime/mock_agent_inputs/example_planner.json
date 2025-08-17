@@ -1,0 +1,9 @@
+{
+  "goal": "plan a demo",
+  "todo": [
+    "Report telemetry for planning duration",
+    "Collect metrics on step generation",
+    "Secure goal parsing against injections",
+    "Handle planner failures gracefully"
+  ]
+}
