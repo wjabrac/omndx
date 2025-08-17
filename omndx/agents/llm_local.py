@@ -96,13 +96,13 @@ class LangChainLLM:
         extra = {k: v for k, v in self.config.items() if k not in self._PROD_KEYS | self._TEST_KEYS}
 
         try:
-            from langchain_openai import ChatOpenAI
+            from langchain_openai import ChatOpenAI  # type: ignore[import-not-found, unused-ignore]
             self.backend = "langchain_openai.ChatOpenAI"
             self._llm = ChatOpenAI(model=model_name, base_url=endpoint, api_key=api_key, **extra)
             call = getattr(self._llm, "invoke", None) or getattr(self._llm, "predict", None) or self._llm
             self._call = call
         except Exception:
-            from langchain_community.llms import OpenAI
+            from langchain_community.llms import OpenAI  # type: ignore[import-not-found, unused-ignore]
             self.backend = "langchain_community.llms.OpenAI"
             if endpoint:
                 extra["openai_api_base"] = endpoint  # pragma: no cover - URL rarely needed in tests

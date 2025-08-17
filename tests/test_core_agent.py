@@ -18,3 +18,8 @@ def test_core_agent_with_langchain_fake_llm():
     llm = LangChainLLM(config)
     agent = CoreAgent(llm)
     assert agent.run("hello") == "hi there"
+
+
+def test_core_agent_callable_fallback():
+    agent = CoreAgent(lambda prompt, **_: prompt.upper())
+    assert agent.run("ping") == "PING"
