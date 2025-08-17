@@ -1,4 +1,8 @@
+import json
+import os
 import sqlite3
+import subprocess
+import sys
 
 from omndx.storage.chat_memory import ChatMemory
 
@@ -50,3 +54,21 @@ def test_migration_adds_session_column(tmp_path):
     cols = [row[1] for row in cur.fetchall()]
     cur.close()
     assert "session_id" in cols
+
+
+def _embedding_via_subprocess(text: str):
+    code = (
+        "from omndx.storage.chat_memory import SimpleEmbeddingFunction; "
+        "import json, sys; "
+        "vec = SimpleEmbeddingFunction()([sys.argv[1]])[0]; "
+        "print(json.dumps(vec.tolist() if hasattr(vec, 'tolist') else vec))"
+    )
+    env = {**os.environ, "PYTHONPATH": os.getcwd()}
+    result = subprocess.check_output([sys.executable, "-c", code, text], env=env)
+    return json.loads(result.decode())
+
+
+def test_simple_embedding_consistent_across_processes():
+    emb1 = _embedding_via_subprocess("reproducible hashing")
+    emb2 = _embedding_via_subprocess("reproducible hashing")
+    assert emb1 == emb2

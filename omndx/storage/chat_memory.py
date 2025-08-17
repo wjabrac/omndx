@@ -1,4 +1,5 @@
 import sqlite3
+import hashlib
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -15,7 +16,9 @@ class SimpleEmbeddingFunction(embedding_functions.EmbeddingFunction):
         for text in texts:
             vec = [0.0] * 16
             for token in text.lower().split():
-                vec[hash(token) % len(vec)] += 1.0
+                digest = hashlib.sha1(token.encode()).digest()
+                index = int.from_bytes(digest, "big") % len(vec)
+                vec[index] += 1.0
             vectors.append(vec)
         return vectors
 
