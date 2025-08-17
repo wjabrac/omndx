@@ -1,9 +1,3 @@
-import sys
-from pathlib import Path
-
-# Ensure the package root is on the Python path for direct test execution
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
 from omndx.agents.llm_local import EchoLLM, LangChainLLM
 from omndx.agents.core_agent import CoreAgent
 
