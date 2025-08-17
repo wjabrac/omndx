@@ -9,7 +9,7 @@ simple echo model or a LangChain powered one.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from .llm_local import LLM
 
@@ -27,4 +27,7 @@ class CoreAgent:
         method if it supports them.
         """
 
-        return self.llm.generate(prompt, **kwargs) if hasattr(self.llm, "generate") else self.llm(prompt, **kwargs)
+        if hasattr(self.llm, "generate"):
+            return str(self.llm.generate(prompt, **kwargs))
+        # Fallback to callable models that lack ``generate``
+        return str(cast(Any, self.llm)(prompt, **kwargs))

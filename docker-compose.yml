@@ -61,6 +61,17 @@ services:
     mem_limit: 512m
     cpus: 1.0
 
+  crewai:
+    profiles: ["crewai"]
+    build:
+      context: .
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app
+    volumes:
+      - .:/app
+
 volumes:
   meili_data:
   mariadb_data:
