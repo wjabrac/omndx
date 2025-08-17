@@ -114,8 +114,8 @@ class LangChainLLM:
             logger.warning("OpenAI backend is deprecated and will be removed in a future release", stacklevel=2)
 
         if os.getenv("OMNDX_LLM_DEBUG"):
-            redacted = (endpoint[:5] + "…") if endpoint else None
-            logger.debug("backend=%s model=%s endpoint=%s", self.backend, model_name, redacted)
+            safe_ep = (endpoint[:5] + "...") if endpoint else None
+            logger.debug("backend=%s model=%s endpoint=%s", self.backend, model_name, safe_ep)
 
     def generate(self, prompt: str, **kwargs: Any) -> str:
         start = time.perf_counter()
