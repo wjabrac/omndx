@@ -11,14 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .llm_local import LLM
-
 
 @dataclass
 class CoreAgent:
     """Minimal core agent that relies on an injected LLM instance."""
 
-    llm: LLM
+    llm: Any
 
     def run(self, prompt: str, **kwargs: Any) -> str:
         """Return the LLM's response for ``prompt``.
@@ -27,4 +25,8 @@ class CoreAgent:
         method if it supports them.
         """
 
-        return self.llm.generate(prompt, **kwargs) if hasattr(self.llm, "generate") else self.llm(prompt, **kwargs)
+        return (
+            str(self.llm.generate(prompt, **kwargs))
+            if hasattr(self.llm, "generate")
+            else str(self.llm(prompt, **kwargs))
+        )

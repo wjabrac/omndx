@@ -1,0 +1,4 @@
+.venv/
+.coverage
+dist/
+*.egg-info/

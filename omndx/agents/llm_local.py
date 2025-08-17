@@ -1,90 +1,134 @@
-"""Local LLM implementations used by agents.
+"""Light‑weight LLM adapter used by agents.
 
-This module defines a very small abstraction for language models and
-provides two concrete implementations used throughout the tests:
+The module exposes a tiny :class:`LLM` protocol and two concrete
+implementations:
 
-* :class:`EchoLLM` – a trivial LLM that simply echoes the input.  Useful for
-  deterministic unit tests.
-* :class:`LangChainLLM` – a wrapper around LangChain's ``LLM`` interface.
-  The wrapper supports selecting a model via a configuration dictionary which
-  may include the ``model_name``, ``endpoint`` and ``api_key``.  Only a tiny
-  subset of the LangChain functionality is required for the tests; the class is
-  intentionally lightweight.
+* :class:`EchoLLM` – deterministic echo used for simple tests.
+* :class:`LangChainLLM` – runtime adapter that wraps LangChain style models.
 
-The goal of this module isn't to be feature complete but to provide a common
-interface for the rest of the code base.  Both implementations expose a single
-``generate`` method which returns a string response for a given prompt.
+The adapter intentionally keeps the public surface minimal: a single
+``generate`` method.  At initialisation the underlying model's preferred call
+path (``invoke``, ``predict`` or ``__call__``) is detected and stored so that
+``generate`` becomes the stable entry point.
+
+For tests the special ``model_name="fake-list"`` activates a self contained
+``FakeListLLM`` which cycles through a list of responses without requiring any
+external dependencies.  When ``model_name`` is anything else the adapter tries
+``langchain_openai.ChatOpenAI`` first and falls back to
+``langchain_community.llms.OpenAI``.  Test only configuration keys such as
+``responses`` are stripped from production backends to avoid accidental leaks.
+
+All configuration keys are validated.  Unknown keys for production models
+raise :class:`ValueError` with the offending key names.  The adapter emits
+structured debug logs describing the backend selection and call timing when the
+``OMNDX_LLM_DEBUG`` environment variable is set.
 """
 from __future__ import annotations
 
+import logging
+import os
+import time
 from dataclasses import dataclass
-from typing import Protocol, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, Protocol
+
+logger = logging.getLogger("omndx.llm")
 
 
 class LLM(Protocol):
-    """Simple protocol all LLM implementations should follow."""
+    """Common protocol all LLM implementations follow."""
 
-    def generate(self, prompt: str) -> str:
-        """Generate a text response for ``prompt``."""
+    def generate(self, prompt: str, **kwargs: Any) -> str:
+        """Return a text response for ``prompt``."""
 
 
 @dataclass
 class EchoLLM:
-    """A minimal LLM used purely for testing.
+    """A trivial LLM that simply echoes the prompt back."""
 
-    ``generate`` returns the prompt unchanged which provides deterministic
-    behaviour for unit tests.
-    """
-
-    def generate(self, prompt: str) -> str:  # pragma: no cover - trivial
+    def generate(self, prompt: str, **_: Any) -> str:  # pragma: no cover - trivial
         return prompt
 
 
-class LangChainLLM:
-    """Wrap a LangChain ``LLM`` instance.
+class FakeListLLM:
+    """Minimal stand‑alone fake LLM used for tests.
 
-    Parameters are provided via a configuration dictionary.  The following keys
-    are recognised:
-
-    ``model_name``:
-        Identifier for the model.  When set to ``"fake-list"`` a
-        ``FakeListLLM`` from ``langchain_community`` is used which requires no
-        external services and is ideal for tests.  For any other value the
-        ``OpenAI`` implementation from ``langchain_community`` is used.
-    ``endpoint``:
-        Optional API base URL passed to the underlying model (when supported).
-    ``api_key``:
-        Optional API key for authenticated models.
-    Additional keys are forwarded to the LangChain model constructor allowing
-    tests to pass ``responses`` for ``FakeListLLM`` for example.
+    ``responses`` is an iterable of predetermined outputs.  The list is cycled
+    and once exhausted the last response is repeated.
     """
 
+    def __init__(self, responses: Optional[List[str]] = None) -> None:
+        self._responses = responses or []
+        self._index = 0
+
+    def invoke(self, _: str, **__: Any) -> str:
+        if not self._responses:
+            return ""
+        if self._index >= len(self._responses):
+            return self._responses[-1]
+        resp = self._responses[self._index]
+        self._index += 1
+        return resp
+
+
+class LangChainLLM:
+    """Adapter over LangChain compatible backends."""
+
+    _TEST_KEYS = {"responses"}
+    _PROD_KEYS = {"model_name", "endpoint", "api_key"}
+
     def __init__(self, config: Dict[str, Any]):
-        model_name: str = config.get("model_name", "")
-        endpoint: Optional[str] = config.get("endpoint")
-        api_key: Optional[str] = config.get("api_key")
-        extra: Dict[str, Any] = {k: v for k, v in config.items() if k not in {"model_name", "endpoint", "api_key"}}
+        self.config = dict(config)
+        model_name = self.config.get("model_name", "")
+        endpoint = self.config.get("endpoint")
+        api_key = self.config.get("api_key") or os.getenv("OPENAI_API_KEY")
 
-        # Lazily import LangChain to avoid importing heavy dependencies when the
-        # class is unused (e.g. in simple tests).
+        allowed = self._PROD_KEYS | (self._TEST_KEYS if model_name == "fake-list" else set())
+        unknown = set(self.config) - allowed
+        if unknown and model_name != "fake-list":
+            raise ValueError(f"Unknown config keys: {sorted(unknown)}")
+
         if model_name == "fake-list":
-            from langchain_community.llms.fake import FakeListLLM
-
-            self._llm = FakeListLLM(**extra)
+            responses = self.config.get("responses")
+            self.backend = "fake-list"
+            self._llm: Any = FakeListLLM(responses)
         else:
-            from langchain_community.llms import OpenAI
+            extra = {k: v for k, v in self.config.items() if k not in self._PROD_KEYS | self._TEST_KEYS}
+            if not api_key:
+                raise ValueError("api_key required for production backends")
+            try:
+                from langchain_openai import ChatOpenAI
 
-            if endpoint:
-                extra["openai_api_base"] = endpoint
-            if api_key:
+                self.backend = "langchain_openai.ChatOpenAI"
+                self._llm = ChatOpenAI(model=model_name, base_url=endpoint, api_key=api_key, **extra)
+            except Exception:  # pragma: no cover - exercised via tests
+                from langchain_community.llms import OpenAI
+
+                self.backend = "langchain_community.llms.OpenAI"
+                if endpoint:
+                    extra["openai_api_base"] = endpoint
                 extra["openai_api_key"] = api_key
-            if model_name:
-                extra["model_name"] = model_name
-            self._llm = OpenAI(**extra)
+                if model_name:
+                    extra["model_name"] = model_name
+                self._llm = OpenAI(**extra)
+                logger.warning(
+                    "OpenAI backend is deprecated and will be removed in a future release", stacklevel=2
+                )
 
-    def generate(self, prompt: str) -> str:
-        """Delegate generation to the underlying LangChain model."""
+        if hasattr(self._llm, "invoke"):
+            self._call = self._llm.invoke
+        elif hasattr(self._llm, "predict"):
+            self._call = self._llm.predict
+        else:
+            self._call = self._llm
 
-        # ``invoke`` is the stable API in modern LangChain releases and returns
-        # a string for standard LLMs.
-        return self._llm.invoke(prompt)
+        if os.getenv("OMNDX_LLM_DEBUG"):
+            redacted = endpoint[:5] + "…" if endpoint else None
+            logger.debug("backend=%s model=%s endpoint=%s", self.backend, model_name, redacted)
+
+    def generate(self, prompt: str, **kwargs: Any) -> str:
+        start = time.perf_counter()
+        result = self._call(prompt, **kwargs)
+        duration = time.perf_counter() - start
+        if os.getenv("OMNDX_LLM_DEBUG"):
+            logger.debug("call backend=%s duration=%.3f", self.backend, duration)
+        return str(result)
