@@ -6,7 +6,7 @@ import pathlib
 
 import pytest
 
-pytest.skip("async tests require pytest-asyncio", allow_module_level=True)
+pytest.importorskip("pytest_asyncio")
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
