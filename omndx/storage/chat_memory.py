@@ -1,11 +1,20 @@
 import sqlite3
 import hashlib
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-import chromadb
-from chromadb.config import Settings
-from chromadb.utils import embedding_functions
+try:  # optional dependency
+    import chromadb  # type: ignore
+    from chromadb.config import Settings  # type: ignore
+    from chromadb.utils import embedding_functions  # type: ignore
+except Exception:  # exercised in tests
+    chromadb = None  # type: ignore
+    class Settings:  # type: ignore
+        def __init__(self, **_: Any) -> None: ...
+    class _EFBase:  # minimal stand-in
+        pass
+    class embedding_functions:  # type: ignore
+        EmbeddingFunction = _EFBase
 
 
 class SimpleEmbeddingFunction(embedding_functions.EmbeddingFunction):
@@ -24,22 +33,30 @@ class SimpleEmbeddingFunction(embedding_functions.EmbeddingFunction):
 
 
 class ChatMemory:
-    """Stores chat messages in SQLite and a Chroma vector store."""
+    """Stores chat messages in SQLite with optional Chroma vector search.
+
+    When ``chromadb`` is unavailable the class still functions but
+    ``search_by_embedding`` falls back to a ranked substring match.
+    """
 
     def __init__(self, db_path: str = "chat_memory.sqlite", persist_directory: Optional[str] = None) -> None:
         self.db_path = db_path
         self.conn = sqlite3.connect(self.db_path)
         self._migrate()
 
-        if persist_directory:
-            settings = Settings(anonymized_telemetry=False, persist_directory=persist_directory)
-            self._client = chromadb.Client(settings)
-        else:
-            settings = Settings(anonymized_telemetry=False)
-            self._client = chromadb.Client(settings)
-        self._collection = self._client.get_or_create_collection(
-            "messages", embedding_function=SimpleEmbeddingFunction()
-        )
+        self._collection = None
+        if chromadb is not None:
+            if persist_directory:
+                settings = Settings(anonymized_telemetry=False, persist_directory=persist_directory)
+            else:
+                settings = Settings(anonymized_telemetry=False)
+            try:
+                client = chromadb.Client(settings)
+                self._collection = client.get_or_create_collection(
+                    "messages", embedding_function=SimpleEmbeddingFunction()
+                )
+            except Exception:  # pragma: no cover - defensive
+                self._collection = None
 
     # ------------------------------------------------------------------
     def _migrate(self) -> None:
@@ -75,11 +92,12 @@ class ChatMemory:
         msg_id = cur.lastrowid
         self.conn.commit()
         cur.close()
-        self._collection.add(
-            ids=[str(msg_id)],
-            documents=[content],
-            metadatas=[{"session_id": session_id}],
-        )
+        if self._collection is not None:
+            self._collection.add(
+                ids=[str(msg_id)],
+                documents=[content],
+                metadatas=[{"session_id": session_id}],
+            )
         return msg_id
 
     # ------------------------------------------------------------------
@@ -99,33 +117,68 @@ class ChatMemory:
             for role, content, created_at in rows
         ]
 
+    @property
+    def is_semantic_enabled(self) -> bool:
+        """Return ``True`` if Chroma vector search is available."""
+        return self._collection is not None
+
     # ------------------------------------------------------------------
     def search_by_embedding(self, query: str, session_id: Optional[str] = None, top_k: int = 5) -> List[Dict[str, Any]]:
         """Search messages similar to the query."""
-        where = {"session_id": session_id} if session_id else None
-        results = self._collection.query(query_texts=[query], n_results=top_k, where=where)
-        ids = results["ids"][0]
-        if not ids:
-            return []
-        placeholders = ",".join(["?"] * len(ids))
+        if self._collection is not None:
+            where = {"session_id": session_id} if session_id else None
+            results = self._collection.query(query_texts=[query], n_results=top_k, where=where)
+            ids = results["ids"][0]
+            if not ids:
+                return []
+            placeholders = ",".join(["?"] * len(ids))
+            cur = self.conn.cursor()
+            cur.execute(
+                f"SELECT id, session_id, role, content, created_at FROM messages WHERE id IN ({placeholders})",
+                ids,
+            )
+            rows = cur.fetchall()
+            cur.close()
+            index = {str(r[0]): r for r in rows}
+            ordered = [index[i] for i in ids if i in index]
+            return [
+                {
+                    "id": r[0],
+                    "session_id": r[1],
+                    "role": r[2],
+                    "content": r[3],
+                    "created_at": r[4],
+                }
+                for r in ordered
+            ]
+
+        # ranked substring fallback
         cur = self.conn.cursor()
-        cur.execute(
-            f"SELECT id, session_id, role, content, created_at FROM messages WHERE id IN ({placeholders})",
-            ids,
-        )
+        sql = "SELECT id, session_id, role, content, created_at FROM messages"
+        params: List[Any] = []
+        if session_id:
+            sql += " WHERE session_id = ?"
+            params.append(session_id)
+        cur.execute(sql, params)
         rows = cur.fetchall()
         cur.close()
-        mapping = {str(row[0]): row for row in rows}
-        ordered = [mapping[i] for i in ids if i in mapping]
+        q = query.lower()
+        scored: List[Tuple[int, int, Tuple[int, str, str, str, str]]] = []
+        for r in rows:
+            text = r[3].lower()
+            if q in text:
+                scored.append((-text.count(q), text.index(q), r))
+        scored.sort()
+        top = [r for _, _, r in scored[:top_k]]
         return [
             {
-                "id": row[0],
-                "session_id": row[1],
-                "role": row[2],
-                "content": row[3],
-                "created_at": row[4],
+                "id": r[0],
+                "session_id": r[1],
+                "role": r[2],
+                "content": r[3],
+                "created_at": r[4],
             }
-            for row in ordered
+            for r in top
         ]
 
 

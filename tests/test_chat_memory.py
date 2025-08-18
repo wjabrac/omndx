@@ -14,6 +14,7 @@ from omndx.storage.chat_memory import ChatMemory
 def test_sessions_are_isolated(tmp_path):
     db_path = tmp_path / "chat.sqlite"
     memory = ChatMemory(db_path=str(db_path))
+    assert memory.is_semantic_enabled
 
     memory.add_message("s1", "user", "hello world")
     memory.add_message("s1", "assistant", "hi")
@@ -29,6 +30,7 @@ def test_sessions_are_isolated(tmp_path):
 def test_vector_search_with_session_filter(tmp_path):
     db_path = tmp_path / "chat.sqlite"
     memory = ChatMemory(db_path=str(db_path))
+    assert memory.is_semantic_enabled
 
     memory.add_message("s1", "user", "cats are great pets")
     memory.add_message("s1", "assistant", "yes cats are wonderful")
