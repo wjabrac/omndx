@@ -35,12 +35,11 @@ class TagLogger:
         # Initialise a default handler if no handlers are present.
         if not self.logger.handlers:
             handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s [%(levelname)s] %(message)s"
-            )
+            formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
 
+        # Tracking state
         self._metrics: Dict[str, int] = defaultdict(int)
         self._lock = Lock()
 
@@ -52,16 +51,14 @@ class TagLogger:
 
         The method is thread-safe and resilient to internal errors.
         """
-
         try:
             with self._lock:
                 self._metrics[tag] += 1
-        except Exception:  # pragma: no cover - defensive safeguard
+        except Exception:  # defensive
             self.logger.exception("Failed to track tag %s", tag)
 
     def get_metrics(self) -> Dict[str, int]:
         """Return a snapshot of the tracked metrics."""
-
         with self._lock:
             return dict(self._metrics)
 
@@ -69,6 +66,11 @@ class TagLogger:
     # Logging helpers
     # ------------------------------------------------------------------
     def log(self, level: int, message: str, tag: str | None = None, **fields: Any) -> None:
+        """Log *message* at *level* optionally associated with *tag*.
+
+        When *tag* is supplied the metric counter for that tag is updated.
+        Errors during logging are captured to avoid disrupting callers.
+        """
         try:
             if fields:
                 extras = " ".join(f"{k}={v}" for k, v in fields.items())
@@ -91,4 +93,3 @@ class TagLogger:
 
 
 __all__ = ["TagLogger"]
-
