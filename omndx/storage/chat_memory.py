@@ -3,16 +3,21 @@ import hashlib
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+# Optional chromadb dependency (graceful fallback if missing)
 try:  # optional dependency
     import chromadb  # type: ignore
     from chromadb.config import Settings  # type: ignore
     from chromadb.utils import embedding_functions  # type: ignore
 except Exception:  # exercised in tests
     chromadb = None  # type: ignore
+
     class Settings:  # type: ignore
-        def __init__(self, **_: Any) -> None: ...
-    class _EFBase:  # minimal stand-in
+        def __init__(self, **_: Any) -> None:
+            ...
+
+    class _EFBase:  # minimal stand-in for typing
         pass
+
     class embedding_functions:  # type: ignore
         EmbeddingFunction = _EFBase
 
@@ -44,18 +49,21 @@ class ChatMemory:
         self.conn = sqlite3.connect(self.db_path)
         self._migrate()
 
+        # Vector index (optional)
         self._collection = None
         if chromadb is not None:
-            if persist_directory:
-                settings = Settings(anonymized_telemetry=False, persist_directory=persist_directory)
-            else:
-                settings = Settings(anonymized_telemetry=False)
+            settings = (
+                Settings(anonymized_telemetry=False, persist_directory=persist_directory)
+                if persist_directory
+                else Settings(anonymized_telemetry=False)
+            )
             try:
-                client = chromadb.Client(settings)
+                client = chromadb.Client(settings)  # type: ignore[attr-defined]
                 self._collection = client.get_or_create_collection(
-                    "messages", embedding_function=SimpleEmbeddingFunction()
+                    "messages", embedding_function=SimpleEmbeddingFunction()  # type: ignore[arg-type]
                 )
-            except Exception:  # pragma: no cover - defensive
+            except Exception:
+                # Defensive: if chroma misconfigures, continue without vector search
                 self._collection = None
 
     # ------------------------------------------------------------------
@@ -73,6 +81,7 @@ class ChatMemory:
             )
             """
         )
+        # Back-compat: old DBs may lack session_id column
         cur.execute("PRAGMA table_info(messages)")
         columns = [row[1] for row in cur.fetchall()]
         if "session_id" not in columns:
@@ -92,8 +101,9 @@ class ChatMemory:
         msg_id = cur.lastrowid
         self.conn.commit()
         cur.close()
+
         if self._collection is not None:
-            self._collection.add(
+            self._collection.add(  # type: ignore[union-attr]
                 ids=[str(msg_id)],
                 documents=[content],
                 metadatas=[{"session_id": session_id}],
@@ -112,10 +122,7 @@ class ChatMemory:
         cur.execute(sql, params)
         rows = cur.fetchall()
         cur.close()
-        return [
-            {"role": role, "content": content, "created_at": created_at}
-            for role, content, created_at in rows
-        ]
+        return [{"role": role, "content": content, "created_at": created_at} for role, content, created_at in rows]
 
     @property
     def is_semantic_enabled(self) -> bool:
@@ -123,36 +130,32 @@ class ChatMemory:
         return self._collection is not None
 
     # ------------------------------------------------------------------
-    def search_by_embedding(self, query: str, session_id: Optional[str] = None, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search_by_embedding(
+        self, query: str, session_id: Optional[str] = None, top_k: int = 5
+    ) -> List[Dict[str, Any]]:
         """Search messages similar to the query."""
+        # Vector path
         if self._collection is not None:
             where = {"session_id": session_id} if session_id else None
-            results = self._collection.query(query_texts=[query], n_results=top_k, where=where)
-            ids = results["ids"][0]
+            res = self._collection.query(  # type: ignore[union-attr]
+                query_texts=[query], n_results=top_k, where=where
+            )
+            ids: List[str] = res["ids"][0]
             if not ids:
                 return []
-            placeholders = ",".join(["?"] * len(ids))
+            qmarks = ",".join(["?"] * len(ids))
             cur = self.conn.cursor()
             cur.execute(
-                f"SELECT id, session_id, role, content, created_at FROM messages WHERE id IN ({placeholders})",
+                f"SELECT id, session_id, role, content, created_at FROM messages WHERE id IN ({qmarks})",
                 ids,
             )
             rows = cur.fetchall()
             cur.close()
-            index = {str(r[0]): r for r in rows}
-            ordered = [index[i] for i in ids if i in index]
-            return [
-                {
-                    "id": r[0],
-                    "session_id": r[1],
-                    "role": r[2],
-                    "content": r[3],
-                    "created_at": r[4],
-                }
-                for r in ordered
-            ]
+            order = {i: n for n, i in enumerate(ids)}
+            rows.sort(key=lambda r: order.get(str(r[0]), 10**9))
+            return [{"id": r[0], "session_id": r[1], "role": r[2], "content": r[3], "created_at": r[4]} for r in rows]
 
-        # ranked substring fallback
+        # Fallback: ranked substring (by frequency desc, then first-pos asc)
         cur = self.conn.cursor()
         sql = "SELECT id, session_id, role, content, created_at FROM messages"
         params: List[Any] = []
@@ -162,24 +165,16 @@ class ChatMemory:
         cur.execute(sql, params)
         rows = cur.fetchall()
         cur.close()
+
         q = query.lower()
         scored: List[Tuple[int, int, Tuple[int, str, str, str, str]]] = []
         for r in rows:
-            text = r[3].lower()
-            if q in text:
-                scored.append((-text.count(q), text.index(q), r))
+            txt = r[3].lower()
+            if q in txt:
+                scored.append((-txt.count(q), txt.index(q), r))
         scored.sort()
         top = [r for _, _, r in scored[:top_k]]
-        return [
-            {
-                "id": r[0],
-                "session_id": r[1],
-                "role": r[2],
-                "content": r[3],
-                "created_at": r[4],
-            }
-            for r in top
-        ]
+        return [{"id": r[0], "session_id": r[1], "role": r[2], "content": r[3], "created_at": r[4]} for r in top]
 
 
-__all__ = ["ChatMemory"]
+__all__ = ["ChatMemory", "SimpleEmbeddingFunction"]
