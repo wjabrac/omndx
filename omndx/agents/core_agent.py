@@ -1,3 +1,31 @@
+"""Core agent abstraction.
+
+The :class:`CoreAgent` is intentionally lightweight. It accepts any object
+implementing the :class:`~omndx.agents.llm_local.LLM` protocol and delegates
+text generation to it. The purpose of the class is to provide a single place
+where different LLM implementations can be plugged in, allowing tests to use a
+simple echo model or a LangChain powered one.
+
+Contracts
+---------
+* Executes the underlying LLM in a single-thread executor enforcing a hard
+  timeout.
+* Retries transient failures with jittered backoff.
+* Truncates returned text at any provided stop token.
+* Normalises backend exceptions to :class:`BackendError` while preserving
+  the original exception as ``__cause__``.
+
+Configuration
+-------------
+Defaults are pulled from class variables or environment variables
+``OMNDX_AGENT_TIMEOUT``, ``OMNDX_AGENT_MAX_RETRIES`` and
+``OMNDX_AGENT_BACKOFF_BASE``. Each call to :meth:`run` accepts keyword
+overrides ``timeout``, ``max_retries`` and ``backoff_base``.
+
+Failure Modes
+-------------
+Raises ``BackendError`` with message ``"timeout"`` or ``"backend error"``.
+"""
 from __future__ import annotations
 
 import concurrent.futures as _futures
@@ -22,28 +50,7 @@ class BackendError(RuntimeError):
 
 @dataclass
 class CoreAgent:
-    """Minimal core agent that relies on an injected LLM instance.
-
-    Contracts
-    ---------
-    * Executes the underlying LLM in a single-thread executor enforcing a hard
-      timeout.
-    * Retries transient failures with jittered backoff.
-    * Truncates returned text at any provided stop token.
-    * Normalises backend exceptions to :class:`BackendError` while preserving
-      the original exception as ``__cause__``.
-
-    Configuration
-    -------------
-    Defaults are pulled from class variables or environment variables
-    ``OMNDX_AGENT_TIMEOUT``, ``OMNDX_AGENT_MAX_RETRIES`` and
-    ``OMNDX_AGENT_BACKOFF_BASE``. Each call to :meth:`run` accepts keyword
-    overrides ``timeout``, ``max_retries`` and ``backoff_base``.
-
-    Failure Modes
-    -------------
-    Raises ``BackendError`` with message ``"timeout"`` or ``"backend error"``.
-    """
+    """Minimal core agent that relies on an injected LLM instance."""
 
     llm: LLM
     timeout: float | None = None
@@ -64,12 +71,14 @@ class CoreAgent:
 
     def run(self, prompt: str, **kwargs: Any) -> str:
         """Return the LLM's response for ``prompt`` with resiliency guards."""
-
         logger = TagLogger(self.__class__.__name__)
         call = getattr(self.llm, "run", None) or getattr(self.llm, "generate", None) or self.llm
+
+        # Extract control kwargs; do not pass them to the backend
         timeout = float(kwargs.pop("timeout", self.timeout))
         max_retries = int(kwargs.pop("max_retries", self.max_retries))
         backoff_base = float(kwargs.pop("backoff_base", self.backoff_base))
+        stop_tokens = kwargs.pop("stop", None)
 
         for attempt in range(max_retries + 1):
             start = time.perf_counter()
@@ -77,7 +86,8 @@ class CoreAgent:
                 with _futures.ThreadPoolExecutor(max_workers=1) as executor:
                     result = executor.submit(call, prompt, **kwargs).result(timeout=timeout)
                 text = str(result)
-                stop_tokens = kwargs.get("stop")
+
+                # Optional stop-token truncation
                 if stop_tokens:
                     tokens = [stop_tokens] if isinstance(stop_tokens, str) else list(stop_tokens)
                     for token in tokens:
@@ -85,13 +95,16 @@ class CoreAgent:
                         if pos != -1:
                             text = text[:pos]
                             break
+
                 elapsed = time.perf_counter() - start
                 logger.info("llm_call", tag="success", attempt=attempt, elapsed=elapsed)
                 return text
+
             except _futures.TimeoutError as exc:
                 elapsed = time.perf_counter() - start
                 logger.error("timeout", tag="timeout", attempt=attempt, elapsed=elapsed)
                 raise BackendError("timeout", cause=exc)
+
             except Exception as exc:  # pragma: no cover - catch-all exercised in tests
                 elapsed = time.perf_counter() - start
                 logger.error("error", tag=exc.__class__.__name__, attempt=attempt, elapsed=elapsed)
