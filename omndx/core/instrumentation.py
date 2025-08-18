@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections import defaultdict
 import logging
 from threading import Lock
-from typing import Dict
+from typing import Any, Dict
 
 
 class TagLogger:
@@ -68,35 +68,26 @@ class TagLogger:
     # ------------------------------------------------------------------
     # Logging helpers
     # ------------------------------------------------------------------
-    def log(self, level: int, message: str, tag: str | None = None) -> None:
-        """Log *message* at *level* optionally associated with *tag*.
-
-        When *tag* is supplied the metric counter for that tag is updated.
-        Errors during logging are captured to avoid disrupting callers.
-        """
-
+    def log(self, level: int, message: str, tag: str | None = None, **fields: Any) -> None:
         try:
+            if fields:
+                extras = " ".join(f"{k}={v}" for k, v in fields.items())
+                message = f"{message} {extras}"
             if tag:
                 message = f"[{tag}] {message}"
                 self.track(tag)
             self.logger.log(level, message)
-        except Exception:  # pragma: no cover - defensive safeguard
+        except Exception:  # defensive
             self.logger.exception("Logging failure")
 
-    def info(self, message: str, tag: str | None = None) -> None:
-        """Log an info level message."""
+    def info(self, message: str, tag: str | None = None, **fields: Any) -> None:
+        self.log(logging.INFO, message, tag, **fields)
 
-        self.log(logging.INFO, message, tag)
+    def warning(self, message: str, tag: str | None = None, **fields: Any) -> None:
+        self.log(logging.WARNING, message, tag, **fields)
 
-    def warning(self, message: str, tag: str | None = None) -> None:
-        """Log a warning level message."""
-
-        self.log(logging.WARNING, message, tag)
-
-    def error(self, message: str, tag: str | None = None) -> None:
-        """Log an error level message."""
-
-        self.log(logging.ERROR, message, tag)
+    def error(self, message: str, tag: str | None = None, **fields: Any) -> None:
+        self.log(logging.ERROR, message, tag, **fields)
 
 
 __all__ = ["TagLogger"]
