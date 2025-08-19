@@ -1,66 +1,80 @@
-import sys
-import types
+import sys, types
 import pytest
+
 from omndx.agents.llm_local import LangChainLLM
 
 
-def test_fake_list_cycles(monkeypatch):
-    monkeypatch.setenv("OMNDX_LLM_DEBUG", "1")
-    llm = LangChainLLM({"model_name": "fake-list", "responses": ["a", "b"]})
-    assert llm.generate("x") == "a"
-    assert llm.generate("x") == "b"
-    assert llm.generate("x") == "b"
+def test_fake_list_cycle_mode():
+    llm = LangChainLLM({"responses": ["a", "b"]})
+    assert llm.run("x") == "a"
+    assert llm.run("x") == "b"
+    assert llm.run("x") == "b"
 
 
-def test_fake_list_empty():
-    llm = LangChainLLM({"model_name": "fake-list"})
-    assert llm.generate("x") == ""
+def test_fake_list_pop_mode():
+    llm = LangChainLLM({"responses": ["a", "b"], "responses_mode": "pop"})
+    assert llm.run("x") == "a"
+    assert llm.run("x") == "b"
+    assert llm.run("x") == ""
 
 
-def test_predict_call_path(monkeypatch):
-    class Dummy:
+def test_fake_list_empty_responses():
+    llm = LangChainLLM({"responses": []})
+    assert llm.run("x") == ""
+
+
+def test_prefers_chatopenai(monkeypatch):
+    class StubChatOpenAI:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
-        def predict(self, prompt, **_):
-            return "ok"
-    monkeypatch.setitem(sys.modules, "langchain_openai", types.SimpleNamespace(ChatOpenAI=Dummy))
-    llm = LangChainLLM({"model_name": "gpt", "api_key": "k"})
-    assert llm.generate("x") == "ok"
-    assert "responses" not in llm.config
+
+        def predict(self, prompt: str) -> str:
+            return "lc" + prompt
+
+    mod = types.SimpleNamespace(ChatOpenAI=StubChatOpenAI)
+    monkeypatch.setitem(sys.modules, "langchain_openai", mod)
+    llm = LangChainLLM({"model_name": "foo", "api_key": "key"})
+    assert llm.run("hi") == "lchi"
 
 
-def test_openai_fallback_filters(monkeypatch, caplog):
-    caplog.set_level("WARNING")
-    class Dummy:
+def test_openai_deprecated_fallback(monkeypatch):
+    class LCOpenAI:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
-        def __call__(self, prompt, **_):
-            return "pong"
-    monkeypatch.setitem(sys.modules, "langchain_openai", None)
-    llms_module = types.SimpleNamespace(OpenAI=Dummy)
-    monkeypatch.setitem(sys.modules, "langchain_community.llms", llms_module)
-    monkeypatch.setenv("OMNDX_LLM_DEBUG", "1")
-    llm = LangChainLLM({"model_name": "gpt", "api_key": "k"})
-    assert llm.generate("y") == "pong"
-    assert "responses" not in llm._llm.kwargs
-    assert any("deprecated" in r.message for r in caplog.records)
+
+        def predict(self, prompt: str, **kwargs) -> str:
+            return "lc" + prompt
+
+    mod_llms = types.SimpleNamespace(OpenAI=LCOpenAI)
+    mod_comm = types.SimpleNamespace(llms=mod_llms)
+    monkeypatch.delitem(sys.modules, "langchain_openai", raising=False)
+    monkeypatch.setitem(sys.modules, "langchain_community", mod_comm)
+    monkeypatch.setitem(sys.modules, "langchain_community.llms", mod_llms)
+    with pytest.warns(DeprecationWarning):
+        llm = LangChainLLM({"model_name": "foo", "api_key": "key"})
+    assert llm.run("hi") == "lchi"
 
 
-def test_openai_rejects_test_keys(monkeypatch):
-    monkeypatch.setitem(sys.modules, "langchain_openai", None)
-    class Dummy:
-        def __init__(self, **kwargs):
-            pass
-    monkeypatch.setitem(sys.modules, "langchain_community.llms", types.SimpleNamespace(OpenAI=Dummy))
+def test_openai_fallback(monkeypatch):
+    class ChatCompletion:
+        @staticmethod
+        def create(**kwargs):
+            return {"choices": [{"message": {"content": "oa"}}]}
+
+    mod_openai = types.SimpleNamespace(ChatCompletion=ChatCompletion, api_key=None)
+    monkeypatch.delitem(sys.modules, "langchain_openai", raising=False)
+    monkeypatch.delitem(sys.modules, "langchain_community", raising=False)
+    monkeypatch.delitem(sys.modules, "langchain_community.llms", raising=False)
+    monkeypatch.setitem(sys.modules, "openai", mod_openai)
+    llm = LangChainLLM({"model_name": "foo", "api_key": "k"})
+    assert llm.run("x") == "oa"
+
+
+def test_unknown_key_validation():
     with pytest.raises(ValueError):
-        LangChainLLM({"model_name": "gpt", "api_key": "k", "responses": ["x"]})
+        LangChainLLM({"unknown": 1})
 
 
-def test_unknown_key_error():
+def test_missing_api_key_raises():
     with pytest.raises(ValueError):
-        LangChainLLM({"model_name": "gpt", "api_key": "k", "foo": 1})
-
-
-def test_missing_api_key():
-    with pytest.raises(ValueError):
-        LangChainLLM({"model_name": "gpt"})
+        LangChainLLM({"model_name": "foo"})

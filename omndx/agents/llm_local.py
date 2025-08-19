@@ -1,127 +1,149 @@
-"""Light-weight LLM adapter used by agents.
-
-Public surface: a single LLM protocol with generate(prompt, **kwargs) -> str,
-plus two concrete implementations:
-- EchoLLM: deterministic echo for tests
-- LangChainLLM: adapter over LangChain-compatible backends
-
-Special case: model_name="fake-list" selects an internal FakeListLLM that
-cycles through predefined responses. No external dependencies are required.
-Production backends require an API key; unknown config keys are rejected.
-Lazy import LangChain only on the production path.
-"""
-
 from __future__ import annotations
 
-import logging
-import os
-import time
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol
-
-logger = logging.getLogger("omndx.llm")
-
-__all__ = ["LLM", "EchoLLM", "FakeListLLM", "LangChainLLM"]
+import os, time, logging, warnings
+from typing import Any, List, Mapping, Protocol, runtime_checkable
 
 
+@runtime_checkable
 class LLM(Protocol):
-    """Common protocol all LLM implementations follow."""
+    """Minimal protocol for language model backends."""
+    def run(self, prompt: str, **kwargs: Any) -> str: ...
 
-    def generate(self, prompt: str, **kwargs: Any) -> str: ...
 
-
-@dataclass
 class EchoLLM:
-    """A trivial LLM that simply echoes the prompt back."""
+    """Test double that echoes the prompt."""
 
-    def generate(self, prompt: str, **_: Any) -> str:  # pragma: no cover
+    def run(self, prompt: str, **_: Any) -> str:
         return prompt
+
+    generate = run
+    __call__ = run
 
 
 class FakeListLLM:
-    """Minimal stand-alone fake LLM used for tests.
+    """Deterministic LLM returning predefined responses."""
 
-    ``responses`` is an iterable of predetermined outputs.  The list is cycled
-    and once exhausted the last response is repeated.
-    """
+    def __init__(self, responses: List[str], mode: str = "cycle") -> None:
+        self._responses = list(responses)
+        self._mode = mode
+        self._last = self._responses[-1] if self._responses else ""
 
-    def __init__(self, responses: Optional[List[str]] = None) -> None:
-        self._responses = responses or []
-        self._index = 0
+    def run(self, prompt: str, **_: Any) -> str:
+        if self._responses:
+            out = self._responses.pop(0)
+            self._last = out
+            return out
+        return self._last if self._mode == "cycle" else ""
 
-    def invoke(self, _: str, **__: Any) -> str:
-        if not self._responses:
-            return ""
-        if self._index >= len(self._responses):
-            return self._responses[-1]
-        resp = self._responses[self._index]
-        self._index += 1
-        return resp
-
-    # Provide a generate method to match our protocol
-    def generate(self, prompt: str, **__: Any) -> str:  # pragma: no cover
-        return self.invoke(prompt)
+    generate = run
+    __call__ = run
 
 
 class LangChainLLM:
-    """Adapter over LangChain-compatible backends."""
+    """Adapter using LangChain when available with strict config validation."""
 
-    _TEST_KEYS = {"responses"}
-    _PROD_KEYS = {"model_name", "endpoint", "api_key"}
+    def __init__(self, config: Mapping[str, Any]) -> None:
+        cfg = dict(config)
+        self._fake: FakeListLLM | None = None
+        self._call: Any | None = None
+        self._backend = "unknown"
+        debug = os.getenv("OMNDX_LLM_DEBUG")
 
-    def __init__(self, config: Dict[str, Any]):
-        self.config = dict(config)
-        model_name = str(self.config.get("model_name", ""))
-        endpoint = self.config.get("endpoint")
-        api_key = self.config.get("api_key") or os.getenv("OPENAI_API_KEY")
-        self._call: Any
-
-        allowed = self._PROD_KEYS | (self._TEST_KEYS if model_name == "fake-list" else set())
-        unknown = set(self.config) - allowed
-        if unknown and model_name != "fake-list":
-            raise ValueError(f"Unknown config keys: {sorted(unknown)}")
-
-        if model_name == "fake-list":
-            self.backend = "fake-list"
-            responses = self.config.get("responses")
-            self._llm = FakeListLLM(responses=responses)
-            self._call = self._llm.generate
-            if os.getenv("OMNDX_LLM_DEBUG"):
-                logger.debug("backend=%s", self.backend)
+        if "responses" in cfg:
+            unknown = set(cfg) - {"responses", "responses_mode"}
+            if unknown:
+                raise ValueError(f"Unknown config keys: {unknown}")
+            mode = cfg.get("responses_mode", "cycle")
+            self._fake = FakeListLLM(cfg.get("responses") or [], mode=mode)
+            self._backend = "fake"
+            if debug:
+                logging.getLogger("omndx.llm").info("backend=%s", self._backend)
             return
 
-        # Production backends
+        unknown = set(cfg) - {"model_name", "endpoint", "api_key", "temperature"}
+        if unknown:
+            raise ValueError(f"Unknown config keys: {unknown}")
+
+        model_name = cfg.get("model_name", os.getenv("OMNDX_MODEL", "gpt-3.5-turbo"))
+        temperature = float(cfg.get("temperature", 0))
+        api_key = cfg.get("api_key") or os.getenv("OPENAI_API_KEY")
+        endpoint = cfg.get("endpoint")
         if not api_key:
-            raise ValueError("api_key required for production backends")
-        extra = {k: v for k, v in self.config.items() if k not in self._PROD_KEYS | self._TEST_KEYS}
+            raise ValueError("api_key required for LangChainLLM")
 
-        try:
-            from langchain_openai import ChatOpenAI  # type: ignore[import-not-found, unused-ignore]
-            self.backend = "langchain_openai.ChatOpenAI"
-            self._llm = ChatOpenAI(model=model_name, base_url=endpoint, api_key=api_key, **extra)
-            call = getattr(self._llm, "invoke", None) or getattr(self._llm, "predict", None) or self._llm
-            self._call = call
+        call = None
+        backend = None
+        try:  # prefer modern langchain_openai packaging
+            from langchain_openai import ChatOpenAI  # type: ignore
+
+            llm = ChatOpenAI(model_name=model_name, temperature=temperature, api_key=api_key)
+
+            def _call(prompt: str, **kwargs: Any) -> str:
+                return llm.predict(prompt, **kwargs)
+
+            call = _call
+            backend = "langchain_openai"
         except Exception:
-            from langchain_community.llms import OpenAI  # type: ignore[import-not-found, unused-ignore]
-            self.backend = "langchain_community.llms.OpenAI"
-            if endpoint:
-                extra["openai_api_base"] = endpoint  # pragma: no cover - URL rarely needed in tests
-            extra["openai_api_key"] = api_key
-            if model_name:
-                extra["model_name"] = model_name
-            self._llm = OpenAI(**extra)
-            self._call = getattr(self._llm, "invoke", None) or getattr(self._llm, "predict", None) or self._llm
-            logger.warning("OpenAI backend is deprecated and will be removed in a future release", stacklevel=2)
+            try:
+                from langchain_community.llms import OpenAI as LCOpenAI  # type: ignore
 
-        if os.getenv("OMNDX_LLM_DEBUG"):
-            redacted = (endpoint[:5] + "…") if endpoint else None
-            logger.debug("backend=%s model=%s endpoint=%s", self.backend, model_name, redacted)
+                warnings.warn(
+                    "langchain_community.llms.OpenAI is deprecated",
+                    DeprecationWarning,
+                )
+                llm = LCOpenAI(
+                    model_name=model_name,
+                    temperature=temperature,
+                    openai_api_key=api_key,
+                )
 
-    def generate(self, prompt: str, **kwargs: Any) -> str:
+                def _call(prompt: str, **kwargs: Any) -> str:
+                    return llm.predict(prompt, **kwargs)
+
+                call = _call
+                backend = "langchain_community"
+            except Exception:
+                try:
+                    import openai  # type: ignore
+
+                    openai.api_key = api_key
+                    if endpoint:
+                        openai.api_base = endpoint
+
+                    def _call(prompt: str, **kwargs: Any) -> str:
+                        resp = openai.ChatCompletion.create(
+                            model=model_name,
+                            messages=[{"role": "user", "content": prompt}],
+                            temperature=temperature,
+                            **kwargs,
+                        )
+                        return resp["choices"][0]["message"]["content"]
+
+                    call = _call
+                    backend = "openai"
+                except Exception as e:  # pragma: no cover - import error
+                    raise RuntimeError("No LLM backend available") from e
+
+        self._call = call
+        self._backend = backend or "unknown"
+        if debug:
+            logging.getLogger("omndx.llm").info("backend=%s", self._backend)
+
+    def run(self, prompt: str, **kwargs: Any) -> str:
+        if self._fake is not None:
+            return self._fake.run(prompt, **kwargs)
+        if self._call is None:
+            raise RuntimeError("LLM not configured")
         start = time.perf_counter()
-        result = self._call(prompt, **kwargs)
-        duration = time.perf_counter() - start
+        out = self._call(prompt, **kwargs)
         if os.getenv("OMNDX_LLM_DEBUG"):
-            logger.debug("call backend=%s duration=%.3f", self.backend, duration)
-        return str(result)
+            logging.getLogger("omndx.llm").info(
+                "backend=%s duration=%.3f", self._backend, time.perf_counter() - start
+            )
+        return out
 
+    generate = run
+    __call__ = run
+
+
+__all__ = ["LLM", "LangChainLLM", "EchoLLM", "FakeListLLM"]
