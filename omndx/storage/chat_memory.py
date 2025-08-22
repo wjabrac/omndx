@@ -125,5 +125,31 @@ class ChatMemory:
             for row in ordered
         ]
 
+    # ------------------------------------------------------------------
+    def close(self) -> None:
+        """Release any open resources."""
+        try:
+            self.conn.close()
+        finally:
+            client = getattr(self, "_client", None)
+            if client is None:
+                return
+            for attr in ("close", "shutdown", "persist", "reset"):
+                func = getattr(client, attr, None)
+                if callable(func):
+                    try:
+                        func()
+                    except Exception:
+                        pass
+                    break
+
+    # ------------------------------------------------------------------
+    def __enter__(self) -> "ChatMemory":
+        return self
+
+    # ------------------------------------------------------------------
+    def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[override]
+        self.close()
+
 
 __all__ = ["ChatMemory"]
