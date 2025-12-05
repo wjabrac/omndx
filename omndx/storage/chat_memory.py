@@ -1,6 +1,6 @@
 import sqlite3
 import hashlib
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 # Optional chromadb dependency (graceful fallback if missing)
@@ -25,6 +25,9 @@ except Exception:  # exercised in tests
 class SimpleEmbeddingFunction(embedding_functions.EmbeddingFunction):
     """Deterministic bag-of-words embedding."""
 
+    def __init__(self, name: str = "simple") -> None:
+        self._name = name
+
     def __call__(self, texts: List[str]) -> List[List[float]]:
         vectors: List[List[float]] = []
         for text in texts:
@@ -35,6 +38,21 @@ class SimpleEmbeddingFunction(embedding_functions.EmbeddingFunction):
                 vec[index] += 1.0
             vectors.append(vec)
         return vectors
+
+    def name(self = None) -> str:  # type: ignore[assignment]
+        # Chroma may call name() on the class instead of an instance.
+        if self is None:
+            return "simple"
+        return getattr(self, "_name", "simple")
+
+    def get_config(self) -> Dict[str, Any]:
+        # Simple deterministic embedding has no tunable parameters beyond name
+        return {"name": self._name}
+
+    @classmethod
+    def build_from_config(cls, config: Dict[str, Any]) -> "SimpleEmbeddingFunction":
+        name = config.get("name", "simple") if isinstance(config, dict) else "simple"
+        return cls(name=name)
 
 
 class ChatMemory:
@@ -92,7 +110,7 @@ class ChatMemory:
     # ------------------------------------------------------------------
     def add_message(self, session_id: str, role: str, content: str) -> int:
         """Add a message to the store and return its ID."""
-        created_at = datetime.utcnow().isoformat()
+        created_at = datetime.now(UTC).isoformat()
         cur = self.conn.cursor()
         cur.execute(
             "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
