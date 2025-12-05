@@ -1,10 +1,4 @@
-# Create the correct package path and write the llm_local.py module expected by your tests.
-import os, textwrap, json, pathlib
-
-base = pathlib.Path("/mnt/data/omndx/agents")
-base.mkdir(parents=True, exist_ok=True)
-
-code = r'''"""
+"""
 Light-weight LLM adapter used by agents.
 
 Public surface: a single LLM protocol with generate(prompt, **kwargs) -> str,
@@ -24,7 +18,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Protocol, Callable
+from typing import Any, Callable, Dict, List, Optional, Protocol
 
 logger = logging.getLogger("omndx.llm")
 
@@ -134,6 +128,7 @@ class LangChainLLM:
         try:
             # Preferred modern LC OpenAI wrapper
             from langchain_openai import ChatOpenAI  # type: ignore[import-not-found, unused-ignore]
+
             self.backend = "langchain_openai.ChatOpenAI"
             self._llm = ChatOpenAI(model=model_name, base_url=endpoint, api_key=api_key, **extra)
             call = getattr(self._llm, "invoke", None) or getattr(self._llm, "predict", None) or self._llm
@@ -141,6 +136,7 @@ class LangChainLLM:
         except Exception:
             # Fallback for older stacks
             from langchain_community.llms import OpenAI  # type: ignore[import-not-found, unused-ignore]
+
             self.backend = "langchain_community.llms.OpenAI"
             if endpoint:
                 extra["openai_api_base"] = endpoint  # pragma: no cover
@@ -162,15 +158,3 @@ class LangChainLLM:
         if os.getenv("OMNDX_LLM_DEBUG"):
             logger.debug("call backend=%s duration=%.3f", self.backend, duration)
         return str(result)
-'''
-
-p = base / "llm_local.py"
-p.write_text(code, encoding="utf-8")
-
-# Ensure package init files exist to allow `from omndx.agents.llm_local import LangChainLLM`
-for pkg in ["/mnt/data/omndx", "/mnt/data/omndx/agents"]:
-    ip = pathlib.Path(pkg) / "__init__.py"
-    if not ip.exists():
-        ip.write_text("", encoding="utf-8")
-
-str(p)
