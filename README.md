@@ -8,6 +8,24 @@ utilities, contribution tracking and simple user interfaces—that can be
 combined into larger workflows. The codebase targets production readiness with
 unit tests and metrics instrumentation for critical paths.
 
+## Getting started
+
+1. Install the project (with dev tools for running the tests):
+
+   ```bash
+   pip install -e .[dev]
+   ```
+
+   The `langchain` extra (`pip install -e .[langchain]`) enables the optional
+   LangChain-backed LLM adapter; the core package runs with the default
+   deterministic stubs.
+
+2. Run the test suite to verify your environment:
+
+   ```bash
+   pytest
+   ```
+
 ## Licensing & Commercial Use
 
 OMNDX is AGPL-3.0 licensed for non-commercial use. All commercial use requires
