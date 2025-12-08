@@ -8,7 +8,7 @@ import sys
 # Ensure the package root is on the import path.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from omndx.core.instrumentation import TagLogger
+from omndx.core.instrumentation import TagLogger, TraceContext
 
 
 def test_tag_logging_counts() -> None:
@@ -16,4 +16,13 @@ def test_tag_logging_counts() -> None:
     logger.info("hello", tag="greeting")
     logger.info("world", tag="greeting")
     assert logger.get_metrics()["greeting"] == 2
+
+
+def test_trace_context_enrichment() -> None:
+    logger = TagLogger("tester-context")
+    context = TraceContext(trace_id="abc123", span_id="1")
+    # Ensure that providing a context does not disrupt tag counting
+    with logger.use_context(context):
+        logger.info("with context", tag="ctx")
+    assert logger.get_metrics()["ctx"] == 1
 

@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from omndx.core.instrumentation import TagLogger
+from omndx.core.instrumentation import TagLogger, TraceContext
 from .llm_local import LLM
 
 
@@ -69,9 +69,9 @@ class CoreAgent:
         self.backoff_base = self.BACKOFF_BASE if self.backoff_base is None else self.backoff_base
         self.backoff_base = float(os.getenv("OMNDX_AGENT_BACKOFF_BASE", self.backoff_base))
 
-    def run(self, prompt: str, **kwargs: Any) -> str:
+    def run(self, prompt: str, *, trace_context: TraceContext | None = None, **kwargs: Any) -> str:
         """Return the LLM's response for ``prompt`` with resiliency guards."""
-        logger = TagLogger(self.__class__.__name__)
+        logger = TagLogger(self.__class__.__name__, context=trace_context)
         call = getattr(self.llm, "run", None) or getattr(self.llm, "generate", None) or self.llm
 
         # Extract control kwargs; do not pass them to the backend

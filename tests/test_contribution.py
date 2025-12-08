@@ -12,12 +12,32 @@ def test_credit_tracker() -> None:
     assert tracker.balance("alice") == 2
 
 
+def test_credit_tracker_state_recovery() -> None:
+    tracker = CreditTracker()
+    tracker.add("alice", 10)
+    tracker.consume("alice", 4)
+    snapshot = tracker.export_state()
+
+    restored = CreditTracker()
+    restored.load_state(snapshot)
+    assert restored.balance("alice") == tracker.balance("alice")
+
+
 def test_access_gate() -> None:
     tracker = CreditTracker()
     tracker.add("bob", 1)
     gate = LlmAccessGate(tracker)
     assert gate.allow("bob") is True
     assert gate.allow("bob") is False
+
+
+def test_access_gate_fail_open() -> None:
+    class ExplodingTracker(CreditTracker):
+        def consume(self, user: str, amount: int, **_: object) -> bool:
+            raise RuntimeError("tracker offline")
+
+    gate = LlmAccessGate(ExplodingTracker(), fail_open=True)
+    assert gate.allow("user") is True
 
 
 def test_trust_score_calculator() -> None:
